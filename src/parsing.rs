@@ -1,5 +1,5 @@
 use once_cell::sync::Lazy;
-use rayon::prelude::{ParallelBridge, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use regex::Regex;
 use reqwest::blocking::Client;
 
@@ -27,6 +27,7 @@ pub fn parse_fdroid() -> LibraryItem {
     let raw_page = get_page_from_path("https://f-droid.org/en/packages/");
     let results = RE
         .captures_iter(&raw_page)
+        .par_bridge()
         .map(|e| e.extract())
         .map(|(_, [name])| {
             eprintln!("{name}");
@@ -63,29 +64,36 @@ fn parse_category_page(input: &str) -> Vec<LibraryItem> {
     let input = input.split_once("<h3>Last Updated</h3>").unwrap().0;
 
     RE.captures_iter(input)
+        .par_bridge()
         .map(|e| e.extract())
-        .map(|(_, [url])| {
+        .flat_map(|(_, [url])| {
             let path = format!("https://f-droid.org{url}");
-            parse_item(&get_page_from_path(&path))
+            let out = parse_item(&get_page_from_path(&path));
+            if out.is_none() {
+                eprintln!("{url} is bad!");
+            }
+            out
         })
         .collect()
 }
 
-fn parse_item(input: &str) -> LibraryItem {
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new("<title>(.+?) \\| .+?</title>[\\s\\S]+?<p class=\"package-version-download\">\\s+<b>\\s+<a href=\"(.+?)\">\\s+Download APK\\s+</a>\\s+</b>\\s+(.+?)\n").unwrap()
+fn parse_item(input: &str) -> Option<LibraryItem> {
+    static CONTENT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new("<p class=\"package-version-download\">\\s+<b>\\s+<a href=\"(.+?)\">\\s+Download APK\\s+</a>\\s+</b>\\s+(.+?)\n").unwrap()
     });
 
-    let (_, [title, url, size]) = RE.captures_iter(input).next().unwrap().extract();
+    static TITLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new("<title>(.+?) \\| .+?</title>").unwrap());
 
+    let (_, [url, size]) = CONTENT_RE.captures(input)?.extract();
     let size = parse_size(size);
+    let (_, [title]) = TITLE_RE.captures(input)?.extract();
 
-    LibraryItem::Document(Document::new(
+    Some(LibraryItem::Document(Document::new(
         title.to_string(),
         url.to_string(),
         size,
         DownloadType::Http,
-    ))
+    )))
 }
 
 pub fn get_page_from_path(path: &str) -> String {
